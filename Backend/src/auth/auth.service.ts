@@ -1,16 +1,19 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   InternalServerErrorException,
   UnauthorizedException,
 } from '@nestjs/common';
-
+import type { User } from '@supabase/supabase-js';
 
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../supabase/supabase.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
+import { CompleteProfileDto } from './dto/complete-profile.dto';
 
 
 @Injectable()
@@ -20,49 +23,122 @@ export class AuthService {
     private readonly config: ConfigService,
   ) {}
 
-
- 
-
-  async login(email: string, password: string) {
-    if (!email || !password) {
-      throw new BadRequestException('Email and password are required.');
+  async register(dto: RegisterDto) {
+    if (dto.password !== dto.confirmPassword) {
+      throw new BadRequestException('Passwords do not match');
     }
 
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    const email = dto.email.trim().toLowerCase();
+    const username = dto.username.toLowerCase();
+    await this.assertUnique(email, dto.phone, username);
 
-    if (error) {
-      throw new UnauthorizedException(error.message);
+    const { data, error } = await this.supabase.createAuthClient().auth.signUp({
+      email,
+      password: dto.password,
+      options: {
+        emailRedirectTo: `${this.config.getOrThrow<string>('FRONTEND_URL')}/login`,
+      },
+    });
+    if (error || !data.user) {
+      throw new BadRequestException('Could not create account');
+    }
+
+    const { error: profileError } = await this.supabase.admin
+      .from('profiles')
+      .insert({
+        id: data.user.id,
+        first_name: dto.firstName.trim(),
+        last_name: dto.lastName.trim(),
+        email,
+        phone: dto.phone,
+        username,
+      });
+
+    if (profileError) {
+      // Roll back the auth user so email/username can be reused.
+      await this.supabase.admin.auth.admin.deleteUser(data.user.id);
+      //23505 = unique violation
+      if (profileError.code === '23505') {
+        throw new ConflictException(
+          'Email, phone number, or username is already in use',
+        );
+      }
+      throw new InternalServerErrorException('Could not create account');
     }
 
     return {
-      message: 'Login successful.',
-      user: data.user,
-      session: data.session,
+      message: 'Registration successful. Check your email to verify your account using the link provided.',
     };
   }
 
-  async getCurrentUser(accessToken: string) {
-    if (!accessToken) {
-      throw new UnauthorizedException('Authorization token is required.');
-    }
+ async login(dto: LoginDto) {
+    const email = await this.resolveEmail(dto.identifier);
 
-    const {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser(accessToken);
+    const { data, error } = await this.supabase
+      .createAuthClient()
+      .auth.signInWithPassword({ email, password: dto.password });
 
-    if (error || !user) {
-      throw new UnauthorizedException(
-        'Invalid or expired authorization token.',
-      );
+    if (error || !data.session) {
+      if (error?.code === 'email_not_confirmed') {
+        throw new ForbiddenException('Please verify your email before logging in');
+      }
+      throw new UnauthorizedException('Invalid credentials');
     }
 
     return {
-      message: 'User retrieved successfully.',
-      user,
+      accessToken: data.session.access_token,
+      refreshToken: data.session.refresh_token,
+      expiresIn: data.session.expires_in,
+      user: { id: data.user.id, email: data.user.email },
+    };
+  }
+
+    /** Swaps a refresh token for a new access + refresh token pair. */
+  async refresh(refreshToken: string) {
+    const { data, error } = await this.supabase
+      .createAuthClient()
+      .auth.refreshSession({ refresh_token: refreshToken });
+
+    if (error || !data.session) {
+      throw new UnauthorizedException('Invalid or expired refresh token');
+    }
+
+    return {
+      accessToken: data.session.access_token,
+      refreshToken: data.session.refresh_token,
+      expiresIn: data.session.expires_in,
+    };
+  }
+
+  /** Ends this session on Supabase so its refresh token stops working. */
+  async logout(accessToken: string) {
+    const { error } = await this.supabase.admin.auth.admin.signOut(
+      accessToken,
+      'local',
+    );
+    if (error) {
+      throw new BadRequestException('Unable to log out');
+    }
+    return { message: 'Logged out successfully' };
+  }
+
+  async resendVerification(email: string) {
+    const { error } = await this.supabase.createAuthClient().auth.resend({
+      type: 'signup',
+      email: email.trim().toLowerCase(),
+      options: {
+        emailRedirectTo: `${this.config.getOrThrow<string>('FRONTEND_URL')}/login`,
+      },
+    });
+
+    if (error) {
+      throw new BadRequestException(error.message);
+    }
+
+    // Same response whether or not the account exists.
+    return {
+      message:
+        'If an unverified account exists with this email, a new verification link has been sent.',
     };
   }
 
@@ -71,10 +147,8 @@ export class AuthService {
       throw new BadRequestException('Email is required.');
     }
 
-    const redirectTo = process.env.PASSWORD_RESET_REDIRECT_URL;
-
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      ...(redirectTo ? { redirectTo } : {}),
+    const { error } = await this.supabase.createAuthClient().auth.resetPasswordForEmail(email.trim().toLowerCase(), {
+      redirectTo: this.config.getOrThrow<string>('PASSWORD_RESET_REDIRECT_URL'),
     });
 
     if (error) {
@@ -87,23 +161,18 @@ export class AuthService {
     };
   }
 
-  async resetPassword(password: string, accessToken: string) {
-    if (!password) {
-      throw new BadRequestException('New password is required.');
-    }
+  async resetPassword(dto: ResetPasswordDto, accessToken: string) {
+    const confirmPassword = (dto as ResetPasswordDto & { confirmPassword?: string })
+      .confirmPassword ?? '';
 
-    if (password.length < 8) {
-      throw new BadRequestException('Password must be at least 8 characters.');
-    }
-
-    if (!accessToken) {
-      throw new UnauthorizedException('Authorization token is required.');
+    if (dto.password !== confirmPassword) {
+      throw new BadRequestException('Passwords do not match.');
     }
 
     const {
       data: { user },
       error: userError,
-    } = await supabase.auth.getUser(accessToken);
+    } = await this.supabase.createAuthClient().auth.getUser(accessToken);
 
     if (userError || !user) {
       throw new UnauthorizedException(
@@ -116,14 +185,14 @@ export class AuthService {
     // token. Call the GoTrue `/user` endpoint directly with that token instead
     // — it's the same request `updateUser` makes under the hood, and it accepts
     // a recovery access token on its own.
-    const res = await fetch(`${process.env.SUPABASE_URL}/auth/v1/user`, {
+    const res = await fetch(`${this.config.getOrThrow<string>('SUPABASE_URL')}/auth/v1/user`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
-        apikey: process.env.SUPABASE_PUBLISHABLE_KEY!,
+        apikey: this.config.getOrThrow<string>('SUPABASE_PUBLISHABLE_KEY'),
         Authorization: `Bearer ${accessToken}`,
       },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ password: dto.password }),
     });
 
     if (!res.ok) {
@@ -147,11 +216,12 @@ export class AuthService {
   }
 
   async googleLogin() {
-    const redirectTo = process.env.GOOGLE_AUTH_REDIRECT_URL;
-
-    const { data, error } = await supabase.auth.signInWithOAuth({
+    
+    const { data, error } = await this.supabase.createAuthClient().auth.signInWithOAuth({
       provider: 'google',
-      options: redirectTo ? { redirectTo } : {},
+      options: { 
+        redirectTo: this.config.getOrThrow<string>('GOOGLE_AUTH_REDIRECT_URL'),
+      },
     });
 
     if (error) {
@@ -162,5 +232,109 @@ export class AuthService {
       message: 'Google authentication started',
       url: data.url,
     };
+  }
+
+    /** Current user plus their profile (null until a Google user completes it). */
+  async getMe(user: User) {
+    const { data, error } = await this.supabase.admin
+      .from('profiles')
+      .select('id, first_name, last_name, email, phone, username')
+      .eq('id', user.id)
+      .maybeSingle();
+
+    if (error) {
+      throw new InternalServerErrorException('Unable to load profile');
+    }
+
+    return {
+      id: user.id,
+      email: user.email,
+      profileComplete: !!data,
+      profile: data ?? null,
+    };
+  }
+
+  /** Creates the profile for an already-authenticated user (e.g. Google sign-in). */
+  async completeProfile(user: User, dto: CompleteProfileDto) {
+    if (!user.email) {
+      throw new BadRequestException('Account has no email address');
+    }
+
+    const { count, error: existsError } = await this.supabase.admin
+      .from('profiles')
+      .select('id', { count: 'exact', head: true })
+      .eq('id', user.id);
+    if (existsError) {
+      throw new InternalServerErrorException('Unable to load profile');
+    }
+    if (count) throw new ConflictException('Profile is already complete');
+
+    const email = user.email.toLowerCase();
+    const username = dto.username.toLowerCase();
+    await this.assertUnique(email, dto.phone, username);
+
+    const { error } = await this.supabase.admin.from('profiles').insert({
+      id: user.id,
+      first_name: dto.firstName.trim(),
+      last_name: dto.lastName.trim(),
+      email,
+      phone: dto.phone,
+      username,
+    });
+
+    if (error) {
+      if (error.code === '23505') {
+        throw new ConflictException(
+          'Email, phone number, or username is already in use',
+        );
+      }
+      throw new InternalServerErrorException('Could not save profile');
+    }
+
+    return { message: 'Profile completed successfully' };
+  }
+
+  /** Turns an email, phone, or username into the account's email. */
+  private async resolveEmail(identifier: string): Promise<string> {
+    const value = identifier.trim();
+    if (value.includes('@')) return value.toLowerCase();
+
+    const isPhone = /^\+?[\d\s-]{7,}$/.test(value);
+    const column = isPhone ? 'phone' : 'username';
+    const lookup = isPhone ? value.replace(/[\s-]/g, '') : value.toLowerCase();
+
+    const { data } = await this.supabase.admin
+      .from('profiles')
+      .select('email')
+      .eq(column, lookup)
+      .maybeSingle();
+
+    // Same error as a wrong password, so accounts can't be probed.
+    if (!data) throw new UnauthorizedException('Invalid credentials');
+    return data.email;
+  }
+
+  private async assertUnique(email: string, phone: string, username: string) {
+    const check = (column: string, value: string) =>
+      this.supabase.admin
+        .from('profiles')
+        .select('id', { count: 'exact', head: true })
+        .eq(column, value);
+
+    const [e, p, u] = await Promise.all([
+      check('email', email),
+      check('phone', phone),
+      check('username', username),
+    ]);
+
+    if (e.error || p.error || u.error) {
+      throw new InternalServerErrorException(
+        'Unable to validate registration details.',
+      );
+    }
+
+    if (e.count) throw new ConflictException('Email is already in use');
+    if (p.count) throw new ConflictException('Phone number is already in use');
+    if (u.count) throw new ConflictException('Username is already taken');
   }
 }
