@@ -23,20 +23,20 @@ export class RegisterDto {
     email: string;
 
     @IsString()
-    @Matches(/^\+[1-9]\d{7-14}$/,{
+    @Matches(/^\+[1-9]\d{7,14}$/,{
         message: 'Phone number must be in international format, e.g.  +2348000000000',
     })
     phone: string;
 
     @IsString()
-    @Matches(/^[a-zA-Z0-9_]{2,19}$/,{
+    @Matches(/^[a-zA-Z0-9_]{3,20}$/,{
         message: 'Username must be 3-20 characters and contain only letters, numbers, or underscores.',
     })
     username: string;
 
     @IsString()
     @MinLength(8)
-    @MaxLength(20)
+    @MaxLength(72)
     password: string;
 
     @IsString()
