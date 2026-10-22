@@ -5,17 +5,43 @@ import { Link, useNavigate } from 'react-router-dom';
 import AppPageLayout from '../components/AppPageLayout';
 import { api } from '../services/api';
 
-interface ApiErrorResponse {
-  message?: string | string[];
+const VEHICLE_TYPES = [
+  { value: 'car', label: 'Car' },
+  { value: 'van', label: 'Van' },
+  { value: 'truck', label: 'Truck' },
+  { value: 'bus', label: 'Bus' },
+  { value: 'motorcycle', label: 'Motorcycle' },
+  { value: 'other', label: 'Other' },
+] as const;
+
+type VehicleType = (typeof VEHICLE_TYPES)[number]['value'];
+
+function collectMessages(value: unknown): string[] {
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) return value.flatMap(collectMessages);
+  if (value && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).flatMap(
+      collectMessages,
+    );
+  }
+  return [];
 }
 
 function errorMessage(error: unknown): string {
-  if (axios.isAxiosError<ApiErrorResponse>(error)) {
-    const message = error.response?.data?.message;
-    if (Array.isArray(message)) return message.join(', ');
-    if (message) return message;
+  if (axios.isAxiosError(error)) {
     if (!error.response) {
       return 'Unable to connect to the server. Please check your connection.';
+    }
+    const data: unknown = error.response.data;
+    if (data && typeof data === 'object') {
+      const record = data as Record<string, unknown>;
+      const details = [
+        ...collectMessages(record.errors),
+        ...collectMessages(record.details),
+        ...collectMessages(record.message),
+      ];
+      const unique = Array.from(new Set(details));
+      if (unique.length) return unique.join(' · ');
     }
   }
   return 'Unable to add the vehicle. Please try again.';
@@ -31,6 +57,7 @@ export default function AddVehiclePage() {
   const [model, setModel] = useState('');
   const [year, setYear] = useState('');
   const [plateNumber, setPlateNumber] = useState('');
+  const [vehicleType, setVehicleType] = useState<VehicleType | ''>('');
   const [mileage, setMileage] = useState('');
   const [nextService, setNextService] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -52,14 +79,19 @@ export default function AddVehiclePage() {
       return;
     }
 
+    if (!vehicleType) {
+      setError('Choose a vehicle type.');
+      return;
+    }
+
     const payload: Record<string, string | number> = {
+      name: name.trim(),
       make: make.trim(),
       model: model.trim(),
       year: yearNumber,
-      plate_number: plateNumber.trim(),
+      plateNumber: plateNumber.trim(),
+      vehicleType,
     };
-
-    if (name.trim()) payload.name = name.trim();
 
     if (mileage.trim()) {
       const mileageNumber = Number(mileage);
@@ -67,10 +99,10 @@ export default function AddVehiclePage() {
         setError('Mileage must be a number that is 0 or more.');
         return;
       }
-      payload.mileage_km = Math.round(mileageNumber);
+      payload.mileageKm = Math.round(mileageNumber);
     }
 
-    if (nextService) payload.next_service = nextService;
+    if (nextService) payload.nextService = nextService;
 
     setSubmitting(true);
     try {
@@ -117,9 +149,11 @@ export default function AddVehiclePage() {
           className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6"
         >
           <label className="block text-sm font-medium text-slate-700">
-            Nickname (optional)
+            Vehicle name
             <input
               type="text"
+              required
+              maxLength={100}
               value={name}
               onChange={(event) => setName(event.target.value)}
               placeholder="e.g. Work van"
@@ -133,6 +167,7 @@ export default function AddVehiclePage() {
               <input
                 type="text"
                 required
+                maxLength={50}
                 value={make}
                 onChange={(event) => setMake(event.target.value)}
                 placeholder="e.g. Toyota"
@@ -145,6 +180,7 @@ export default function AddVehiclePage() {
               <input
                 type="text"
                 required
+                maxLength={50}
                 value={model}
                 onChange={(event) => setModel(event.target.value)}
                 placeholder="e.g. Corolla"
@@ -170,11 +206,31 @@ export default function AddVehiclePage() {
               <input
                 type="text"
                 required
+                maxLength={20}
                 value={plateNumber}
                 onChange={(event) => setPlateNumber(event.target.value)}
                 placeholder="e.g. ABC-123DE"
                 className={inputClass}
               />
+            </label>
+
+            <label className="block text-sm font-medium text-slate-700">
+              Vehicle type
+              <select
+                required
+                value={vehicleType}
+                onChange={(event) =>
+                  setVehicleType(event.target.value as VehicleType | '')
+                }
+                className={inputClass}
+              >
+                <option value="">Select a type</option>
+                {VEHICLE_TYPES.map((type) => (
+                  <option key={type.value} value={type.value}>
+                    {type.label}
+                  </option>
+                ))}
+              </select>
             </label>
 
             <label className="block text-sm font-medium text-slate-700">
@@ -189,7 +245,7 @@ export default function AddVehiclePage() {
               />
             </label>
 
-            <label className="block text-sm font-medium text-slate-700">
+            <label className="block text-sm font-medium text-slate-700 sm:col-span-2">
               Next service date (optional)
               <input
                 type="date"
