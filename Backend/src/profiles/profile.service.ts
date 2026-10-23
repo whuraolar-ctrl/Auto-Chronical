@@ -164,6 +164,16 @@ export class ProfileService {
       changes.account_type = dto.accountType;
     }
     if (dto.avatarUrl !== undefined) {
+      const supabaseUrl = this.config
+      .getOrThrow<string>('SUPABASE_URL')
+      .replace(/\/$/, ''); // Remove trailing slash if present
+      const ownFolder = `${supabaseUrl}/storage/v1/object/public/profile-avatars/${userId}/`;
+
+      if (dto.avatarUrl && !dto.avatarUrl.startsWith(ownFolder)) {
+        throw new BadRequestException(
+          'avatarUrl must be an image in your own profile folder',
+        );
+      }
       changes.avatar_url = dto.avatarUrl;
     }
     if (dto.username !== undefined) {

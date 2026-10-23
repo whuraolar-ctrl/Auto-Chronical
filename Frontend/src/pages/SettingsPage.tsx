@@ -27,10 +27,6 @@ const currencyDisplayNames = new Intl.DisplayNames('en', {
   type: 'currency',
 });
 
-const timezoneDisplayNames = new Intl.DisplayNames('en', {
-  type: 'timeZone',
-});
-
 const currencyOptions = Intl.supportedValuesOf('currency')
   .sort()
   .map((currency) => ({
@@ -42,7 +38,7 @@ const timezoneOptions = Intl.supportedValuesOf('timeZone')
   .sort()
   .map((timezone) => ({
     value: timezone,
-    label: `${timezoneDisplayNames.of(timezone) ?? timezone} (${timezone})`,
+    label: timezone,
   }));
 
 export default function SettingsPage() {
