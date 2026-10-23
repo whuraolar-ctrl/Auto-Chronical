@@ -1195,13 +1195,13 @@ text-xs text-slate-500"
           <section className="rounded-3xl bg-slate-950 p-5 text-white shadow-sm sm:p-6">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-teal-300"">
+                <p className="text-xs font-semibold uppercase tracking-wide text-teal-300">
                   YOUR SAVINGS
                 </p>
 
                 <h2 className="text-lg font-semibold text-[#F5F3E8]">Car Fund</h2>
 
-                <p className="text-sm text-[#C7D2CE]"">
+                <p className="text-sm text-[#C7D2CE]">
                   Prepare for future vehicle costs.
                 </p>
               </div>
