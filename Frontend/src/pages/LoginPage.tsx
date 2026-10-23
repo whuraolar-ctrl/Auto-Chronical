@@ -31,7 +31,7 @@ export default function LoginPage() {
       );
 
       storeAuthSession(session);
-      navigate('/', { replace: true });
+      navigate('/dashboard', { replace: true });
     } catch (requestError) {
       setError(
         requestError instanceof Error
