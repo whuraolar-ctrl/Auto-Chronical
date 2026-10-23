@@ -391,7 +391,7 @@ export default function ProfilePage() {
                 setSuccess('');
                 setError('');
               }}
-              className="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold transition hover:bg-white/10"
+              className="rounded-xl border border-[#f5f3eb] bg-[#f5f3eb] px-4 py-2 text-sm font-semibold text-[#173c36] transition hover:bg-white"
             >
               {' '}
               Edit{' '}
